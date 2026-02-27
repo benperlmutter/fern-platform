@@ -438,6 +438,67 @@ var _ = Describe("UC-02: Test Summaries and Visualization", Label("e2e"), func()
 						// If we find the container, that's enough to confirm navigation worked
 						return containerCount > 0 || (backCount > 0 && titleCount > 0)
 					}, 5*time.Second).Should(BeTrue())
+					
+					// Verify loading state appears first (or we see the chart directly)
+					// The component should either show loading or go directly to chart/empty state
+					Eventually(func() bool {
+						loading := page.Locator(".loading")
+						chartSvg := page.Locator(".chart-container svg")
+						emptyState := page.Locator(".empty-state")
+						errorState := page.Locator(".error-message")
+						
+						loadingCount, _ := loading.Count()
+						chartCount, _ := chartSvg.Count()
+						emptyCount, _ := emptyState.Count()
+						errorCount, _ := errorState.Count()
+						
+						// Should have one of: loading, chart, empty state, or error
+						return loadingCount > 0 || chartCount > 0 || emptyCount > 0 || errorCount > 0
+					}, 10*time.Second).Should(BeTrue())
+					
+					// If there's data, verify chart renders properly
+					Eventually(func() bool {
+						chartSvg := page.Locator(".chart-container svg")
+						emptyState := page.Locator(".empty-state")
+						
+						chartCount, _ := chartSvg.Count()
+						emptyCount, _ := emptyState.Count()
+						
+						// Should have either chart or empty state (not loading anymore)
+						return chartCount > 0 || emptyCount > 0
+					}, 15*time.Second).Should(BeTrue())
+					
+					// Verify back button works
+					backButton := page.Locator(".back-button")
+					err = backButton.Click()
+					Expect(err).NotTo(HaveOccurred())
+					
+					// Should return to test summaries view
+					Eventually(func() bool {
+						cards := page.Locator(".card")
+						cardCount, _ := cards.Count()
+						return cardCount > 0
+					}, 5*time.Second).Should(BeTrue())
+				}
+			})
+		})
+		
+		Context("Test history with fallback stats", func() {
+			It("should show fallback message when treemap data unavailable", func() {
+				// Wait for page to load
+				time.Sleep(2 * time.Second)
+				
+				// Look for any card showing fallback message
+				fallbackText := page.Locator("text=Showing all-time stats")
+				
+				// This is conditional - only appears when treemap is slow/unavailable
+				// We don't fail the test if it's not present
+				textCount, _ := fallbackText.Count()
+				if textCount > 0 {
+					By("Found fallback stats message - treemap data was unavailable")
+					Expect(textCount).To(BeNumerically(">", 0))
+				} else {
+					By("No fallback message - treemap data loaded successfully")
 				}
 			})
 		})

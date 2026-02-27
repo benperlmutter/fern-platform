@@ -1838,14 +1838,20 @@
                         );
                     
                     case 'recent':
-                        return [...projects].sort((a, b) => 
-                            new Date(b.last_run_time || 0) - new Date(a.last_run_time || 0)
-                        );
+                        return [...projects].sort((a, b) => {
+                            // Handle both snake_case and camelCase for compatibility
+                            const aTime = a.stats?.lastRunTime || a.last_run_time || 0;
+                            const bTime = b.stats?.lastRunTime || b.last_run_time || 0;
+                            return new Date(bTime) - new Date(aTime);
+                        });
                     
                     case 'success-rate':
                         return [...projects].sort((a, b) => {
-                            const aRate = a.total_tests > 0 ? (a.passed_tests || 0) / a.total_tests : 0;
-                            const bRate = b.total_tests > 0 ? (b.passed_tests || 0) / b.total_tests : 0;
+                            // Use stats.successRate from GraphQL or calculate from project fields
+                            const aRate = a.stats?.successRate ?? 
+                                          (a.total_tests > 0 ? (a.passed_tests || 0) / a.total_tests : 0);
+                            const bRate = b.stats?.successRate ?? 
+                                          (b.total_tests > 0 ? (b.passed_tests || 0) / b.total_tests : 0);
                             return bRate - aRate;
                         });
                     
@@ -2733,20 +2739,61 @@
         }
 
         // Test History Stack Chart Component
-        function TestHistoryChart({ project, testRuns, onBack }) {
+        function TestHistoryChart({ project, onBack }) {
             const svgRef = useRef();
             const [selectedSuite, setSelectedSuite] = useState('all');
+            const [projectRuns, setProjectRuns] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            
+            // Fetch test runs for this specific project when component mounts
+            useEffect(() => {
+                if (!project) return;
+                
+                // Create flag to prevent state updates after unmount
+                let isMounted = true;
+                
+                const fetchProjectTestRuns = async () => {
+                    try {
+                        setLoading(true);
+                        setError(null);
+                        
+                        // Fetch last 50 runs for this project (we'll show last 20 in chart)
+                        const data = await graphqlClient.query(GRAPHQL_QUERIES.GET_PROJECT_TEST_RUNS, { 
+                            projectId: project.projectId, 
+                            limit: 50 
+                        });
+                        
+                        // Only update state if component is still mounted and project hasn't changed
+                        if (isMounted) {
+                            const runs = (data.recentTestRuns || [])
+                                .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))
+                                .slice(-20); // Show last 20 runs
+                            
+                            setProjectRuns(runs);
+                        }
+                    } catch (err) {
+                        if (isMounted) {
+                            console.error('Failed to fetch project test runs:', err);
+                            setError(err.message);
+                        }
+                    } finally {
+                        if (isMounted) {
+                            setLoading(false);
+                        }
+                    }
+                };
+                
+                fetchProjectTestRuns();
+                
+                // Cleanup function to prevent state updates after unmount
+                return () => {
+                    isMounted = false;
+                };
+            }, [project?.projectId]); // Re-fetch if project changes
             
             useEffect(() => {
-                if (!project || !testRuns.length) return;
-                
-                // Filter and prepare data for this project
-                const projectRuns = testRuns
-                    .filter(run => run.projectId === project.projectId)
-                    .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))
-                    .slice(-20); // Show last 20 runs
-                
-                if (projectRuns.length === 0) return;
+                if (!project || loading || projectRuns.length === 0) return;
                 
                 const svg = d3.select(svgRef.current);
                 svg.selectAll("*").remove();
@@ -3033,9 +3080,77 @@
                     .style("fill", "var(--text-secondary)")
                     .text("Test Run Date & Time");
                 
-            }, [project, testRuns, selectedSuite]);
+            }, [project, projectRuns, selectedSuite, loading]);
             
             if (!project) return null;
+            
+            if (loading) {
+                return (
+                    <div className="test-history-container fade-in">
+                        <div className="history-header">
+                            <button className="back-button" onClick={onBack}>
+                                <i className="fas fa-arrow-left"></i>
+                                Back to Overview
+                            </button>
+                            <div className="history-title">
+                                <h3>Test History: {project.name}</h3>
+                                <p>Loading test run history...</p>
+                            </div>
+                        </div>
+                        <div className="loading" style={{ padding: '4rem 2rem' }}>
+                            <i className="fas fa-spinner"></i>
+                            <div style={{fontSize: '1.125rem', fontWeight: '500', marginTop: '1rem'}}>Loading test history...</div>
+                        </div>
+                    </div>
+                );
+            }
+            
+            if (error) {
+                return (
+                    <div className="test-history-container fade-in">
+                        <div className="history-header">
+                            <button className="back-button" onClick={onBack}>
+                                <i className="fas fa-arrow-left"></i>
+                                Back to Overview
+                            </button>
+                            <div className="history-title">
+                                <h3>Test History: {project.name}</h3>
+                                <p>Error loading test history</p>
+                            </div>
+                        </div>
+                        <div className="error-message" style={{ padding: '4rem 2rem' }}>
+                            <i className="fas fa-exclamation-triangle"></i>
+                            <div style={{fontSize: '1.125rem', fontWeight: '500', marginTop: '1rem'}}>Error: {error}</div>
+                        </div>
+                    </div>
+                );
+            }
+            
+            if (projectRuns.length === 0) {
+                return (
+                    <div className="test-history-container fade-in">
+                        <div className="history-header">
+                            <button className="back-button" onClick={onBack}>
+                                <i className="fas fa-arrow-left"></i>
+                                Back to Overview
+                            </button>
+                            <div className="history-title">
+                                <h3>Test History: {project.name}</h3>
+                                <p>No test history available</p>
+                            </div>
+                        </div>
+                        <div className="empty-state" style={{ padding: '4rem 2rem' }}>
+                            <i className="fas fa-chart-line" style={{ fontSize: '4rem', color: 'var(--text-tertiary)', marginBottom: '1.5rem' }}></i>
+                            <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem', color: 'var(--text-primary)', fontWeight: '600' }}>
+                                No Test History Available
+                            </h3>
+                            <p style={{ fontSize: '1rem', maxWidth: '600px', margin: '0 auto', lineHeight: '1.6', color: 'var(--text-secondary)' }}>
+                                There are no test runs recorded for this project yet. Test runs will appear here once you start submitting test results to the platform.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
             
             return (
                 <div className="test-history-container fade-in">
@@ -4476,7 +4591,6 @@
             if (showHistory && selectedProject) {
                 return <TestHistoryChart 
                     project={selectedProject} 
-                    testRuns={testRuns} 
                     onBack={hideProjectHistory} 
                 />;
             }
@@ -4563,11 +4677,13 @@
                     {(viewMode === 'grid' || viewMode === 'treemap') && getDisplayProjects().length > 0 && (
                         <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '2.5rem', rowGap: '3rem'}}>
                             {getDisplayProjects().map(project => {
-                                // Get stats from treemap data for consistency with Manager Dashboard
+                                // Get stats from treemap data first (filtered by time range)
+                                // Fall back to project.stats if treemap data is unavailable
                                 let totalTests = 0;
                                 let passedTests = 0;
                                 let failedTests = 0;
                                 let totalRuns = 0;
+                                let usingFallback = false;
                                 
                                 if (treemapData && treemapData.projects) {
                                     const projectData = treemapData.projects.find(p => p.project.projectId === project.projectId);
@@ -4578,7 +4694,25 @@
                                         failedTests = totalTests - passedTests;
                                         // Use the totalRuns from treemap data which respects the time range filter
                                         totalRuns = projectData.totalRuns || 0;
+                                    } else {
+                                        // Treemap loaded but this project not in it (no runs in time range)
+                                        // Use project stats as fallback - but project.stats doesn't have test counts
+                                        usingFallback = true;
+                                        totalRuns = project.stats?.totalTestRuns || 0;
+                                        // Note: project.stats doesn't have totalTests/passedTests/failedTests
+                                        // These will remain 0, which is correct - we don't have aggregate test counts
+                                        totalTests = 0;
+                                        passedTests = 0;
+                                        failedTests = 0;
                                     }
+                                } else {
+                                    // Treemap data not available yet or failed - use project stats
+                                    usingFallback = true;
+                                    totalRuns = project.stats?.totalTestRuns || 0;
+                                    // Note: project.stats doesn't have totalTests/passedTests/failedTests
+                                    totalTests = 0;
+                                    passedTests = 0;
+                                    failedTests = 0;
                                 }
 
                                 const isFlipped = viewMode === 'treemap' || flippedCards.has(project.id);
@@ -4598,6 +4732,11 @@
                                                     <p style={{margin: 0, color: 'var(--text-secondary)', fontSize: '0.875rem'}}>
                                                         {project.description || 'No description provided'}
                                                     </p>
+                                                    {usingFallback && (
+                                                        <p style={{margin: '0.5rem 0 0 0', color: 'var(--text-tertiary)', fontSize: '0.75rem', fontStyle: 'italic'}}>
+                                                            Showing all-time stats (no runs in selected time range)
+                                                        </p>
+                                                    )}
                                                 </div>
                                                 {(project.project_id || project.id) && (
                                                     <button
@@ -4631,18 +4770,24 @@
                                                 <div style={{textAlign: 'center', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)'}}>
                                                     <div style={{fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)'}}>{totalTests}</div>
                                                     <div style={{fontSize: '0.75rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Total Tests</div>
+                                                    {usingFallback && totalTests === 0 && (
+                                                        <div style={{fontSize: '0.65rem', color: 'var(--text-tertiary)', marginTop: '0.25rem', fontStyle: 'italic'}}>No data</div>
+                                                    )}
                                                 </div>
-                                                <div style={{textAlign: 'center', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)'}}>
+                                                <div 
+                                                    style={{textAlign: 'center', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)', cursor: usingFallback ? 'help' : 'default'}}
+                                                    title={usingFallback ? "No test runs found in the selected time range. Showing total runs across all time." : ""}
+                                                >
                                                     <div style={{fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)'}}>{totalRuns}</div>
                                                     <div style={{fontSize: '0.75rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Test Runs</div>
                                                 </div>
                                             </div>
                                             
                                             <div style={{display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '1rem'}}>
-                                                <span style={{fontSize: '0.875rem', fontWeight: '500'}}>
+                                                <span style={{fontSize: '0.875rem', fontWeight: '500', opacity: usingFallback && totalTests === 0 ? 0.5 : 1}}>
                                                     <span className="success" style={{fontSize: '1.125rem', fontWeight: '700'}}>{passedTests}</span> passed
                                                 </span>
-                                                <span style={{fontSize: '0.875rem', fontWeight: '500'}}>
+                                                <span style={{fontSize: '0.875rem', fontWeight: '500', opacity: usingFallback && totalTests === 0 ? 0.5 : 1}}>
                                                     <span className="error" style={{fontSize: '1.125rem', fontWeight: '700'}}>{failedTests}</span> failed
                                                 </span>
                                             </div>

@@ -1356,7 +1356,54 @@ func TestRecentTestRuns_domain(t *testing.T) {
 
 		mockRepo.AssertExpectations(t)
 	})
+
+	t.Run("with project filter and large limit for lazy loading", func(t *testing.T) {
+		mockRepo := new(testhelpers.MockTestRunRepository)
+		testingService := testingApp.NewTestRunService(mockRepo, nil, nil)
+
+		projectID := "proj-1"
+		limit := 50 // Simulates lazy-loading scenario where UI fetches 50 runs for a specific project
+		testRuns := make([]*testingDomain.TestRun, 20)
+		
+		// Create 20 test runs for the project
+		for i := 0; i < 20; i++ {
+			testRuns[i] = &testingDomain.TestRun{
+				ID:        uint(i + 1),
+				RunID:     fmt.Sprintf("run-%d", i+1),
+				ProjectID: projectID,
+				Status:    "completed",
+				StartTime: now.Add(time.Duration(-i) * time.Hour),
+				Duration:  5 * time.Second,
+				Tags:      []testingDomain.Tag{},
+				SuiteRuns: []testingDomain.SuiteRun{},
+			}
+		}
+
+		mockRepo.On("GetLatestByProjectID", mock.Anything, projectID, limit).Return(testRuns, nil)
+
+		logger, _ := logging.NewLogger(&config.LoggingConfig{Level: "error", Format: "json", Output: "stdout", Structured: true})
+		db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+
+		resolver := NewResolver(testingService, nil, nil, nil, nil, db, logger)
+		queryResolver := &queryResolver{resolver}
+
+		result, err := queryResolver.RecentTestRuns_domain(context.Background(), &projectID, &limit)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Len(t, result, 20)
+		// Verify all runs belong to the same project
+		for i, run := range result {
+			assert.Equal(t, projectID, run.ProjectID, "Run %d should belong to project %s", i, projectID)
+		}
+		// Verify runs are in chronological order (most recent first based on our test data)
+		assert.Equal(t, "run-1", result[0].RunID)
+		assert.Equal(t, "run-20", result[19].RunID)
+
+		mockRepo.AssertExpectations(t)
+	})
 }
+
 
 // Test GetProject_domain
 func TestGetProject_domain(t *testing.T) {

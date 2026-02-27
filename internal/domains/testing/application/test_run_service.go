@@ -155,6 +155,11 @@ func (s *TestRunService) GetProjectTestRuns(ctx context.Context, projectID strin
 	return s.testRunRepo.GetLatestByProjectID(ctx, projectID, limit)
 }
 
+// CountProjectTestRuns counts total test runs for a project
+func (s *TestRunService) CountProjectTestRuns(ctx context.Context, projectID string) (int64, error) {
+	return s.testRunRepo.CountByProjectID(ctx, projectID)
+}
+
 // GetTestRunSummary retrieves test run summary for a project
 func (s *TestRunService) GetTestRunSummary(ctx context.Context, projectID string) (*domain.TestRunSummary, error) {
 	return s.testRunRepo.GetTestRunSummary(ctx, projectID)

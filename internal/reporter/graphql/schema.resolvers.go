@@ -528,8 +528,113 @@ func (r *projectResolver) CanManage(ctx context.Context, obj *model.Project) (bo
 
 // Stats is the resolver for the stats field.
 func (r *projectResolver) Stats(ctx context.Context, obj *model.Project) (*model.ProjectStats, error) {
-	// TODO: Implement project stats in domain service
-	return nil, nil
+	projectID := obj.ProjectID
+	
+	// Handle nil testing service (e.g., in tests with minimal setup)
+	if r.testingService == nil {
+		return &model.ProjectStats{
+			TotalTestRuns:   0,
+			RecentTestRuns:  0,
+			UniqueBranches:  0,
+			SuccessRate:     0.0,
+			AverageDuration: 0,
+			LastRunTime:     nil,
+		}, nil
+	}
+	
+	// Get accurate total count (not capped at 100)
+	totalCount, err := r.testingService.CountProjectTestRuns(ctx, projectID)
+	if err != nil {
+		r.logger.WithError(err).Warnf("Failed to count test runs for project %s", projectID)
+		return &model.ProjectStats{
+			TotalTestRuns:   0,
+			RecentTestRuns:  0,
+			UniqueBranches:  0,
+			SuccessRate:     0.0,
+			AverageDuration: 0,
+			LastRunTime:     nil,
+		}, nil
+	}
+	
+	if totalCount == 0 {
+		return &model.ProjectStats{
+			TotalTestRuns:   0,
+			RecentTestRuns:  0,
+			UniqueBranches:  0,
+			SuccessRate:     0.0,
+			AverageDuration: 0,
+			LastRunTime:     nil,
+		}, nil
+	}
+	
+	// Get sample of recent test runs for other stats (100 is enough for averages)
+	testRuns, err := r.testingService.GetProjectTestRuns(ctx, projectID, 100)
+	if err != nil {
+		r.logger.WithError(err).Warnf("Failed to get test runs for project %s stats", projectID)
+		return &model.ProjectStats{
+			TotalTestRuns:   int(totalCount),
+			RecentTestRuns:  0,
+			UniqueBranches:  0,
+			SuccessRate:     0.0,
+			AverageDuration: 0,
+			LastRunTime:     nil,
+		}, nil
+	}
+	
+	// Get recent runs count (last 30 days)
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+	recentCount := 0
+	for _, run := range testRuns {
+		if run.StartTime.After(thirtyDaysAgo) {
+			recentCount++
+		}
+	}
+	
+	// Count unique branches
+	branchSet := make(map[string]bool)
+	for _, run := range testRuns {
+		if run.Branch != "" {
+			branchSet[run.Branch] = true
+		}
+	}
+	
+	// Calculate success rate and average duration
+	var totalDuration time.Duration
+	passedRuns := 0
+	
+	for _, run := range testRuns {
+		totalDuration += run.Duration
+		if run.Status == "passed" || run.Status == "completed" {
+			passedRuns++
+		}
+	}
+	
+	successRate := 0.0
+	if len(testRuns) > 0 {
+		successRate = float64(passedRuns) / float64(len(testRuns))
+	}
+	
+	avgDuration := 0
+	if len(testRuns) > 0 {
+		avgDuration = int(totalDuration.Milliseconds()) / len(testRuns)
+	}
+	
+	// Find the most recent StartTime (don't assume ordering)
+	var lastRunTime *time.Time
+	for _, run := range testRuns {
+		if lastRunTime == nil || run.StartTime.After(*lastRunTime) {
+			lastRunTime = &run.StartTime
+		}
+	}
+	
+	return &model.ProjectStats{
+		TotalTestRuns:   int(totalCount),
+		RecentTestRuns:  recentCount,
+		UniqueBranches:  len(branchSet),
+		SuccessRate:     successRate,
+		AverageDuration: avgDuration,
+		LastRunTime:     lastRunTime,
+	}, nil
 }
 
 // CurrentUser is the resolver for the currentUser field.
